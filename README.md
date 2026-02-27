@@ -12,11 +12,15 @@ I really like coffee, so if this enhances your life, please buy me one :)
 
 Grab the latest **TPV2Garmin.exe** from the [Releases](https://github.com/gloscherrybomb/TPV2Garmin/releases/latest) page.
 
+Official releases are currently Windows-first.
+
 ## Features
 
 - Watches your TPV FIT output folder for new activity files
 - Rewrites device metadata so Garmin Connect accepts the file as a real device
 - Uploads directly to Garmin Connect (supports MFA)
+- Waits until each file is actually parseable as FIT before conversion/upload
+- Skips short/non-activity recordings (`< 100 m`) to avoid bad uploads
 - Windows toast notifications on success/error
 - System tray integration — runs quietly in the background
 - TPV-linked mode: auto-starts watching when TPVirtual.exe is running
@@ -49,7 +53,7 @@ pip install -e .
 tpv2garmin
 ```
 
-### Building the .exe
+### Building the Windows `.exe`
 
 ```bash
 pip install pyinstaller
@@ -57,6 +61,18 @@ pyinstaller build/tpv2garmin.spec
 ```
 
 Output: `dist/TPV2Garmin.exe`
+
+### Building a macOS app and `.dmg`
+
+```bash
+pip install pyinstaller
+pyinstaller --noconfirm --clean --windowed --name TPV2Garmin --paths src --add-data "src/tpv2garmin/assets:tpv2garmin/assets" src/tpv2garmin/app.py
+hdiutil create -volname "TPV2Garmin" -srcfolder "dist/TPV2Garmin.app" -ov -format UDZO "dist/TPV2Garmin-macOS.dmg"
+```
+
+Outputs:
+- `dist/TPV2Garmin.app`
+- `dist/TPV2Garmin-macOS.dmg`
 
 ## License
 
