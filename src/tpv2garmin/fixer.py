@@ -90,8 +90,21 @@ class FitFixer:
 
 # ── Standalone helpers ───────────────────────────────────────────────────────
 
+def _is_readable_fit(path: Path) -> bool:
+    """Return ``True`` when *path* can be parsed as a FIT file."""
+    try:
+        ensure_patch()
+        from fit_tool.fit_file import FitFile
+
+        fit_file = FitFile.from_file(str(path))
+        return len(fit_file.records) > 0
+    except Exception:
+        logger.debug("FIT not readable yet: %s", path.name, exc_info=True)
+        return False
+
+
 def wait_for_write_complete(path: Path, timeout: float = 10.0) -> bool:
-    """Poll *path*'s file size until it is stable for 2 seconds.
+    """Poll *path* until size is stable and the file parses as FIT.
 
     This is useful when watching a directory for newly created FIT files;
     the producing application may still be writing data when we first
@@ -107,7 +120,7 @@ def wait_for_write_complete(path: Path, timeout: float = 10.0) -> bool:
     Returns
     -------
     bool
-        ``True`` if the file size stabilised within *timeout*, ``False``
+        ``True`` if the file stabilised and became readable within *timeout*, ``False``
         otherwise.
     """
     poll_interval = 0.5  # seconds between size checks
@@ -133,8 +146,10 @@ def wait_for_write_complete(path: Path, timeout: float = 10.0) -> bool:
             last_size = current_size
             stable_since = now
         elif stable_since is not None and (now - stable_since) >= stable_threshold:
-            logger.debug("File %s stable at %d bytes", path.name, current_size)
-            return True
+            if _is_readable_fit(path):
+                logger.debug("File %s stable and readable at %d bytes", path.name, current_size)
+                return True
+            logger.debug("File %s is size-stable but not yet parseable; waiting", path.name)
 
         time.sleep(poll_interval)
 
@@ -199,6 +214,7 @@ def get_unprocessed_files(folder: Path) -> list[Path]:
 def get_fit_distance(path: Path) -> float | None:
     """Return total distance (meters) from the FIT session, or None on failure."""
     try:
+        ensure_patch()
         from fit_tool.fit_file import FitFile
         from fit_tool.profile.messages.session_message import SessionMessage
 
