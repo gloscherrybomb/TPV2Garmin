@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tpv2garmin"
-version = "1.3.0"
+version = "1.3.1"
 description = "Auto-upload TrainingPeaks Virtual FIT files to Garmin Connect with device spoofing"
 requires-python = ">=3.12"
 dependencies = [
@@ -14,8 +14,10 @@ dependencies = [
     "Pillow>=10.0.0",
     "watchdog>=6.0.0",
     "psutil>=5.9.0",
-    "winotify>=1.1.0",
     "appdirs>=1.4.4",
+    "winotify>=1.1.0; sys_platform == 'win32'",
+    "desktop-notifier>=4.0.0; sys_platform != 'win32'",
+    "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
 ]
 
 [project.gui-scripts]

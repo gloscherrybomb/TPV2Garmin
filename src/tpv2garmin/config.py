@@ -56,7 +56,12 @@ class AppConfig:
 
 # ── ConfigManager ───────────────────────────────────────────────────────────
 class ConfigManager:
-    """Load/save AppConfig from %APPDATA%/TPV2Garmin/config.json."""
+    """Load/save AppConfig to config.json in the platform user data directory.
+
+    Typical paths:
+    - Windows: %APPDATA%\\TPV2Garmin\\
+    - macOS: ~/Library/Application Support/TPV2Garmin/
+    """
 
     def __init__(self) -> None:
         self._ensure_dirs()

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import queue
+import sys
 import tkinter as tk
 from tkinter import ttk
 from pathlib import Path
@@ -18,6 +20,61 @@ from tpv2garmin.notifications import (
 logger = logging.getLogger(__name__)
 
 LOG_POLL_MS = 250  # ms between queue → Text widget updates
+
+
+def _set_mac_dock_icon() -> None:
+    """Set the Dock icon on macOS to match the menu bar icon (requires PyObjC)."""
+    if sys.platform != "darwin":
+        return
+    icon_path = Path(__file__).parent / "assets" / "icon.png"
+    if not icon_path.exists():
+        return
+    try:
+        from AppKit import NSApplication, NSImage
+
+        app = NSApplication.sharedApplication()
+        img = NSImage.alloc().initWithContentsOfFile_(str(icon_path.resolve()))
+        if img is not None:
+            app.setApplicationIconImage_(img)
+            logger.debug("Set Dock icon from %s", icon_path)
+    except ImportError:
+        pass  # PyObjC not available
+    except Exception:
+        logger.debug("Could not set Dock icon", exc_info=True)
+
+
+def _set_mac_dock_visible(visible: bool) -> None:
+    """Show or hide the Dock icon on macOS (for minimize-to-menu-bar behavior)."""
+    if sys.platform != "darwin":
+        return
+    try:
+        from AppKit import (
+            NSApplication,
+            NSApplicationActivationPolicyAccessory,
+            NSApplicationActivationPolicyRegular,
+        )
+
+        app = NSApplication.sharedApplication()
+        if visible:
+            app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+            app.activateIgnoringOtherApps_(True)
+            _set_mac_dock_icon()  # Restore custom icon
+        else:
+            app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+            logger.debug("Dock icon hidden (activation policy: Accessory)")
+    except ImportError:
+        pass  # PyObjC not available
+    except Exception:
+        logger.debug("Could not toggle Dock icon visibility", exc_info=True)
+
+
+def _log_font() -> tuple[str, int]:
+    """Monospace font for the activity log. Consolas on Windows, Menlo on Mac."""
+    if sys.platform == "darwin":
+        return ("Menlo", 9)
+    if sys.platform == "win32":
+        return ("Consolas", 9)
+    return ("Monospace", 9)
 
 
 class MainWindow:
@@ -36,6 +93,8 @@ class MainWindow:
         self._process_monitor = None
         self._tray = None
         self._watching = False
+        self._ui_update_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+        self._quit_requested = False
 
         self._build_ui()
         self._wire_pipeline()
@@ -103,7 +162,7 @@ class MainWindow:
 
         self._log_text = tk.Text(
             log_frame, height=12, wrap="word", state="disabled",
-            bg="#1e1e1e", fg="#cccccc", font=("Consolas", 9),
+            bg="#1e1e1e", fg="#cccccc", font=_log_font(),
         )
         scrollbar = ttk.Scrollbar(log_frame, command=self._log_text.yview)
         self._log_text.config(yscrollcommand=scrollbar.set)
@@ -117,7 +176,8 @@ class MainWindow:
         ttk.Button(bottom, text="Settings", command=self._open_settings).pack(
             side="left"
         )
-        ttk.Button(bottom, text="Minimize to Tray", command=self._minimize_to_tray).pack(
+        minimize_label = "Minimize to Menu Bar" if sys.platform == "darwin" else "Minimize to Tray"
+        ttk.Button(bottom, text=minimize_label, command=self._minimize_to_tray).pack(
             side="right"
         )
 
@@ -134,24 +194,45 @@ class MainWindow:
         self._pipeline.on_auth_required = self._cb_auth_required
 
     def _cb_file_detected(self, path: Path) -> None:
-        self._set_status("Processing...", "orange")
+        # Pipeline runs in worker thread; Tk requires main thread on macOS
+        self._ui_update_queue.put(("Processing...", "orange"))
 
     def _cb_file_processing(self, path: Path) -> None:
         pass  # already logged
 
     def _cb_file_success(self, path: Path) -> None:
-        self._set_status("Watching for new files", "green")
+        self._ui_update_queue.put(("Watching for new files", "green"))
         get_notifier().notify_success(path.name)
 
     def _cb_file_error(self, path: Path, error: str) -> None:
-        self._set_status("Error — see log", "red")
+        self._ui_update_queue.put(("Error — see log", "red"))
         get_notifier().notify_error(path.name, error)
 
     def _cb_auth_required(self) -> None:
-        self._set_status("Authentication required", "red")
+        self._ui_update_queue.put(("Authentication required", "red"))
         get_notifier().notify_auth_required()
-        # Show the window so the user can re-authenticate
         self.root.after(0, self._restore_window)
+
+    def _drain_ui_updates(self) -> bool:
+        """Process pending UI updates (main thread only). Returns False if quit requested."""
+        if self._quit_requested:
+            self._quit_requested = False
+            self._quit()
+            return False
+        while True:
+            try:
+                text, colour = self._ui_update_queue.get_nowait()
+                if text == "__open__":
+                    self._restore_window()
+                elif text == "__process_now__":
+                    self._process_now()
+                elif text == "__toggle__":
+                    self._toggle_watching()
+                else:
+                    self._set_status(text, colour)
+            except queue.Empty:
+                break
+        return True
 
     # ── Watching control ──────────────────────────────────────────────────
 
@@ -200,15 +281,15 @@ class MainWindow:
     # ── TPV-linked mode ───────────────────────────────────────────────────
 
     def _start_process_monitor(self) -> None:
-        from tpv2garmin.process_monitor import ProcessMonitor
+        from tpv2garmin.process_monitor import ProcessMonitor, TPV_PROCESS_NAME
 
         self._process_monitor = ProcessMonitor()
         self._process_monitor.on_tpv_detected = self._on_tpv_detected
         self._process_monitor.on_tpv_exited = self._on_tpv_exited
         self._process_monitor.on_grace_expired = self._on_grace_expired
         self._process_monitor.start()
-        self._set_status("TPV-linked: waiting for TPVirtual.exe", "grey")
-        logger.info("TPV-linked mode: monitoring for TPVirtual.exe")
+        self._set_status(f"TPV-linked: waiting for {TPV_PROCESS_NAME}", "grey")
+        logger.info("TPV-linked mode: monitoring for %s", TPV_PROCESS_NAME)
 
     def _on_tpv_detected(self) -> None:
         self.root.after(0, self._start_watching)
@@ -217,9 +298,11 @@ class MainWindow:
         self.root.after(0, lambda: self._set_status("Grace period (5 min)", "orange"))
 
     def _on_grace_expired(self) -> None:
+        from tpv2garmin.process_monitor import TPV_PROCESS_NAME
+
         self.root.after(0, self._stop_watching)
         self.root.after(0, lambda: self._set_status(
-            "TPV-linked: waiting for TPVirtual.exe", "grey"
+            f"TPV-linked: waiting for {TPV_PROCESS_NAME}", "grey"
         ))
 
     # ── Status display ────────────────────────────────────────────────────
@@ -247,6 +330,8 @@ class MainWindow:
         self._poll_log()
 
     def _poll_log(self) -> None:
+        if not self._drain_ui_updates():
+            return  # Quit requested, root is being destroyed
         if _queue_handler is not None:
             messages = _queue_handler.get_messages()
             if messages:
@@ -285,19 +370,22 @@ class MainWindow:
         self.root.withdraw()
         if self._tray is None:
             self._create_tray()
+        _set_mac_dock_visible(False)
 
     def _create_tray(self) -> None:
         from tpv2garmin.tray import TrayManager
 
+        # Quit uses a flag: root.after() from tray thread is unreliable on macOS
         self._tray = TrayManager(
-            on_open=lambda: self.root.after(0, self._restore_window),
-            on_process_now=lambda: self.root.after(0, self._process_now),
-            on_toggle_watching=lambda: self.root.after(0, self._toggle_watching),
-            on_quit=lambda: self.root.after(0, self._quit),
+            on_open=lambda: self._ui_update_queue.put(("__open__", "")),
+            on_process_now=lambda: self._ui_update_queue.put(("__process_now__", "")),
+            on_toggle_watching=lambda: self._ui_update_queue.put(("__toggle__", "")),
+            on_quit=lambda: setattr(self, "_quit_requested", True),
         )
         self._tray.start()
 
     def _restore_window(self) -> None:
+        _set_mac_dock_visible(True)
         self.root.deiconify()
         self.root.lift()
 
@@ -335,6 +423,7 @@ def main() -> None:
     logger.info("TPV2Garmin starting")
 
     root = tk.Tk()
+    _set_mac_dock_icon()
     root.withdraw()  # hide while deciding wizard vs main
 
     cm = get_config_manager()

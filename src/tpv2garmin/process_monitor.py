@@ -1,8 +1,9 @@
-"""Process monitor: detect TPVirtual.exe for TPV-linked mode."""
+"""Process monitor: detect TPVirtual for TPV-linked mode."""
 
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 import time
 from typing import Callable
@@ -11,13 +12,13 @@ import psutil
 
 logger = logging.getLogger(__name__)
 
-TPV_PROCESS_NAME = "TPVirtual.exe"
+TPV_PROCESS_NAME = "TPVirtual.exe" if sys.platform == "win32" else "TPVirtual"
 POLL_INTERVAL = 5  # seconds between process checks
 GRACE_PERIOD = 300  # 5 minutes after TPV exits
 
 
 class ProcessMonitor:
-    """Daemon thread that monitors for TPVirtual.exe.
+    """Daemon thread that monitors for TPVirtual.
 
     On detection → calls on_tpv_detected callback.
     On exit → waits for grace period, then calls on_grace_expired.
@@ -63,14 +64,14 @@ class ProcessMonitor:
         while not self._stop_event.is_set():
             proc = self._find_tpv()
             if proc is not None:
-                logger.info("TPVirtual.exe detected (PID %d)", proc.pid)
+                logger.info("TPVirtual detected (PID %d)", proc.pid)
                 if self.on_tpv_detected:
                     self.on_tpv_detected()
 
                 # Wait for the process to exit (zero CPU — blocks on OS wait)
                 self._wait_for_exit(proc)
 
-                logger.info("TPVirtual.exe exited")
+                logger.info("TPVirtual exited")
                 if self.on_tpv_exited:
                     self.on_tpv_exited()
 
@@ -86,7 +87,7 @@ class ProcessMonitor:
                 self._stop_event.wait(POLL_INTERVAL)
 
     def _find_tpv(self) -> psutil.Process | None:
-        """Scan running processes for TPVirtual.exe."""
+        """Scan running processes for TPVirtual."""
         try:
             for proc in psutil.process_iter(["name"]):
                 try:

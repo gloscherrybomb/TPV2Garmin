@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
@@ -31,6 +32,8 @@ class Pipeline:
 
     def __init__(self) -> None:
         self._executor = ThreadPoolExecutor(max_workers=1)
+        self._pending: set[str] = set()
+        self._pending_lock = threading.Lock()
 
         # Callbacks — set by the GUI layer
         self.on_file_detected: Callable[[Path], None] | None = None
@@ -42,7 +45,11 @@ class Pipeline:
     # ── Public API ────────────────────────────────────────────────────────
 
     def submit(self, path: Path) -> None:
-        """Submit a file for background processing."""
+        """Submit a file for background processing. Skips if already queued."""
+        with self._pending_lock:
+            if path.name in self._pending:
+                return
+            self._pending.add(path.name)
         self._executor.submit(self._process_file_safe, path)
 
     def process_all_unprocessed(self, folder: Path) -> None:
@@ -62,6 +69,9 @@ class Pipeline:
             self._process_file(path)
         except Exception:
             logger.exception("Unhandled error processing %s", path)
+        finally:
+            with self._pending_lock:
+                self._pending.discard(path.name)
 
     def _process_file(self, path: Path) -> None:
         if self.on_file_detected:

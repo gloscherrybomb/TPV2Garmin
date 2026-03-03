@@ -46,11 +46,11 @@ def _inject_device_info(fit_path: Path, profile: Profile) -> None:
     with a new DeviceInfoMessage inserted right after the FileCreatorMessage
     (or FileIdMessage if no creator exists), and writes it back.
     """
-    from fit_tool.fit_file import FitFile
-    from fit_tool.fit_file_builder import FitFileBuilder
-    from fit_tool.profile.messages.device_info_message import DeviceInfoMessage
-    from fit_tool.profile.messages.file_creator_message import FileCreatorMessage
-    from fit_tool.profile.messages.file_id_message import FileIdMessage
+    from fit_file_faker.vendor.fit_tool.fit_file import FitFile
+    from fit_file_faker.vendor.fit_tool.fit_file_builder import FitFileBuilder
+    from fit_file_faker.vendor.fit_tool.profile.messages.device_info_message import DeviceInfoMessage
+    from fit_file_faker.vendor.fit_tool.profile.messages.file_creator_message import FileCreatorMessage
+    from fit_file_faker.vendor.fit_tool.profile.messages.file_id_message import FileIdMessage
 
     fit_file = FitFile.from_file(str(fit_path))
 
@@ -262,8 +262,8 @@ def get_unprocessed_files(folder: Path) -> list[Path]:
 def get_fit_distance(path: Path) -> float | None:
     """Return total distance (meters) from the FIT session, or None on failure."""
     try:
-        from fit_tool.fit_file import FitFile
-        from fit_tool.profile.messages.session_message import SessionMessage
+        from fit_file_faker.vendor.fit_tool.fit_file import FitFile
+        from fit_file_faker.vendor.fit_tool.profile.messages.session_message import SessionMessage
 
         fit_file = FitFile.from_file(str(path))
         for record in fit_file.records:

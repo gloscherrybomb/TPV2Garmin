@@ -3,6 +3,8 @@ __pycache__/
 *$py.class
 *.egg-info/
 dist/
+build/icon.iconset/
+build/icon_1024.png
 .venv/
 venv/
 *.log

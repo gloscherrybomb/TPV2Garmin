@@ -1,8 +1,11 @@
 """Settings dialog (tkinter Toplevel) for TPV2Garmin."""
 
+import plistlib
+import subprocess
 import sys
 import logging
 import tkinter as tk
+from pathlib import Path
 from tkinter import ttk
 
 from tpv2garmin import __version__
@@ -11,9 +14,29 @@ from tpv2garmin.auth import get_auth_manager
 
 logger = logging.getLogger(__name__)
 
-# Registry constants
+# Windows Registry constants
 _REG_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 _REG_VALUE_NAME = "TPV2Garmin"
+
+# macOS Launch Agent
+_LAUNCH_AGENT_LABEL = "com.tpv2garmin"
+_LAUNCH_AGENT_FILENAME = f"{_LAUNCH_AGENT_LABEL}.plist"
+
+
+def _auto_start_label() -> str:
+    """Platform-appropriate label for the auto-start checkbox."""
+    if sys.platform == "darwin":
+        return "Start at login"
+    if sys.platform == "win32":
+        return "Auto-start with Windows"
+    return "Auto-start"
+
+
+def _tpv_linked_label() -> str:
+    """Platform-appropriate label for the TPV-linked run mode."""
+    if sys.platform == "darwin":
+        return "TPV-linked (activate when TPVirtual is running)"
+    return "TPV-linked (activate when TPVirtual.exe is running)"
 
 
 class SettingsDialog(tk.Toplevel):
@@ -77,7 +100,7 @@ class SettingsDialog(tk.Toplevel):
 
         ttk.Radiobutton(
             run_frame,
-            text="TPV-linked (activate when TPVirtual.exe is running)",
+            text=_tpv_linked_label(),
             variable=self._run_mode_var,
             value="tpv_linked",
         ).pack(anchor="w", padx=10, pady=(0, 5))
@@ -85,7 +108,7 @@ class SettingsDialog(tk.Toplevel):
         # ── Auto-start ───────────────────────────────────────────────────
         ttk.Checkbutton(
             self,
-            text="Auto-start with Windows",
+            text=_auto_start_label(),
             variable=self._auto_start_var,
         ).pack(anchor="w", **pad)
 
@@ -196,11 +219,28 @@ class SettingsDialog(tk.Toplevel):
         self.destroy()
 
 
-# ── Auto-start registry helpers ──────────────────────────────────────────────
+# ── Auto-start helpers (platform-specific) ───────────────────────────────────
 
 
 def _get_auto_start() -> bool:
-    """Return True if the auto-start registry entry exists."""
+    """Return True if auto-start is configured for this platform."""
+    if sys.platform == "win32":
+        return _get_auto_start_windows()
+    if sys.platform == "darwin":
+        return _get_auto_start_mac()
+    return False
+
+
+def _set_auto_start(enabled: bool) -> None:
+    """Enable or disable auto-start for this platform."""
+    if sys.platform == "win32":
+        _set_auto_start_windows(enabled)
+    elif sys.platform == "darwin":
+        _set_auto_start_mac(enabled)
+
+
+def _get_auto_start_windows() -> bool:
+    """Return True if the Windows Registry Run key exists."""
     try:
         import winreg
 
@@ -216,8 +256,8 @@ def _get_auto_start() -> bool:
         return False
 
 
-def _set_auto_start(enabled: bool) -> None:
-    """Add or remove the auto-start registry entry."""
+def _set_auto_start_windows(enabled: bool) -> None:
+    """Add or remove the Windows Registry Run entry."""
     try:
         import winreg
     except ImportError:
@@ -225,12 +265,7 @@ def _set_auto_start(enabled: bool) -> None:
         return
 
     if enabled:
-        # Use the frozen exe path when running as a PyInstaller bundle,
-        # otherwise fall back to the Python interpreter.
         exe_path = sys.executable
-        if getattr(sys, "frozen", False):
-            exe_path = sys.executable
-
         try:
             with winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER,
@@ -253,6 +288,55 @@ def _set_auto_start(enabled: bool) -> None:
                 winreg.DeleteValue(key, _REG_VALUE_NAME)
             logger.info("Auto-start disabled")
         except FileNotFoundError:
-            pass  # Value didn't exist; nothing to remove
+            pass
         except OSError:
             logger.exception("Failed to remove auto-start registry value")
+
+
+def _launch_agent_path() -> Path:
+    """Path to the Launch Agent plist file."""
+    return Path.home() / "Library" / "LaunchAgents" / _LAUNCH_AGENT_FILENAME
+
+
+def _get_auto_start_mac() -> bool:
+    """Return True if the Launch Agent plist exists."""
+    return _launch_agent_path().exists()
+
+
+def _get_launch_agent_program_args() -> list[str]:
+    """Return ProgramArguments for the Launch Agent."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable]
+    return [sys.executable, "-m", "tpv2garmin"]
+
+
+def _set_auto_start_mac(enabled: bool) -> None:
+    """Create or remove the Launch Agent plist and load/unload it."""
+    plist_path = _launch_agent_path()
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if enabled:
+        program_args = _get_launch_agent_program_args()
+        plist = {
+            "Label": _LAUNCH_AGENT_LABEL,
+            "ProgramArguments": program_args,
+            "RunAtLoad": True,
+            "LimitLoadToSessionType": "Aqua",
+        }
+        plist_path.write_bytes(plistlib.dumps(plist))
+        logger.info("Auto-start enabled: %s", program_args)
+        # Plist is loaded automatically at next login; no need to launchctl load now
+    else:
+        # Unload first, then remove plist
+        try:
+            subprocess.run(
+                ["launchctl", "unload", str(plist_path)],
+                capture_output=True,
+                timeout=5,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+
+        if plist_path.exists():
+            plist_path.unlink()
+            logger.info("Auto-start disabled")

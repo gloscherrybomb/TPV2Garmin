@@ -1,5 +1,6 @@
 """System tray icon module using pystray and Pillow."""
 
+import sys
 import threading
 import logging
 from pathlib import Path
@@ -10,7 +11,16 @@ from pystray import MenuItem, Menu
 
 logger = logging.getLogger(__name__)
 
-ICON_PATH = Path(__file__).parent / "assets" / "icon.ico"
+ASSETS_DIR = Path(__file__).parent / "assets"
+
+
+def _icon_path() -> Path:
+    """Platform-appropriate icon path. PNG on Mac (better support), ICO on Windows."""
+    if sys.platform == "darwin":
+        p = ASSETS_DIR / "icon.png"
+        if p.exists():
+            return p
+    return ASSETS_DIR / "icon.ico"
 
 
 class TrayManager:
@@ -66,25 +76,38 @@ class TrayManager:
 
     @staticmethod
     def _create_icon() -> Image.Image:
-        """Load the icon from *assets/icon.ico*, or generate a fallback."""
-        if ICON_PATH.exists():
+        """Load the icon from assets, or generate a fallback."""
+        icon_path = _icon_path()
+        if icon_path.exists():
             try:
-                img = Image.open(ICON_PATH)
-                logger.debug("Loaded tray icon from %s", ICON_PATH)
+                img = Image.open(icon_path)
+                logger.debug("Loaded tray icon from %s", icon_path)
                 return img
             except Exception:
                 logger.warning(
                     "Failed to open %s; falling back to generated icon.",
-                    ICON_PATH,
+                    icon_path,
                     exc_info=True,
                 )
 
         # Fallback: 64x64 blue square with a white "G".
         img = Image.new("RGB", (64, 64), color=(41, 98, 255))
         draw = ImageDraw.Draw(img)
-        try:
-            font = ImageFont.truetype("arial.ttf", 40)
-        except OSError:
+        if sys.platform == "win32":
+            font_paths = ["arial.ttf"]
+        else:
+            font_paths = [
+                "/System/Library/Fonts/Helvetica.ttc",
+                "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+            ]
+        font = None
+        for path in font_paths:
+            try:
+                font = ImageFont.truetype(path, 40)
+                break
+            except OSError:
+                continue
+        if font is None:
             font = ImageFont.load_default()
         draw.text((16, 8), "G", fill="white", font=font)
         logger.debug("Using generated fallback tray icon.")

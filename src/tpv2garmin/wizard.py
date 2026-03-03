@@ -1,5 +1,7 @@
 """Three-step setup wizard for TPV2Garmin (tkinter Toplevel)."""
 
+import queue
+import sys
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import threading
@@ -126,12 +128,27 @@ class SetupWizard(tk.Toplevel):
         self._connect_btn.config(state="disabled")
         self._set_login_status("Connecting...", "grey")
 
+        # Use a queue instead of after() from worker thread — on macOS,
+        # after() scheduled from a non-main thread may not fire reliably.
+        login_queue: queue.Queue[tuple[str | None, str]] = queue.Queue()
+
         def _worker():
             auth = get_auth_manager()
             result = auth.login(email, password)
-            self.after(0, lambda: self._handle_login_result(result, email))
+            login_queue.put((result, email))
 
         threading.Thread(target=_worker, daemon=True).start()
+        self._poll_login_result(login_queue)
+
+    def _poll_login_result(
+        self, login_queue: queue.Queue[tuple[str | None, str]]
+    ) -> None:
+        """Poll for login result on main thread (macOS-safe)."""
+        try:
+            result, email = login_queue.get_nowait()
+            self._handle_login_result(result, email)
+        except queue.Empty:
+            self.after(100, lambda: self._poll_login_result(login_queue))
 
     def _handle_login_result(self, result: str | None, email: str) -> None:
         self._connect_btn.config(state="normal")
@@ -158,12 +175,23 @@ class SetupWizard(tk.Toplevel):
         self._mfa_btn.config(state="disabled")
         self._set_login_status("Verifying MFA code...", "grey")
 
+        mfa_queue: queue.Queue[str | None] = queue.Queue()
+
         def _worker():
             auth = get_auth_manager()
             result = auth.handle_mfa(code)
-            self.after(0, lambda: self._handle_mfa_result(result))
+            mfa_queue.put(result)
 
         threading.Thread(target=_worker, daemon=True).start()
+        self._poll_mfa_result(mfa_queue)
+
+    def _poll_mfa_result(self, mfa_queue: queue.Queue[str | None]) -> None:
+        """Poll for MFA result on main thread (macOS-safe)."""
+        try:
+            result = mfa_queue.get_nowait()
+            self._handle_mfa_result(result)
+        except queue.Empty:
+            self.after(100, lambda: self._poll_mfa_result(mfa_queue))
 
     def _handle_mfa_result(self, result: str | None) -> None:
         self._mfa_btn.config(state="normal")
@@ -219,16 +247,21 @@ class SetupWizard(tk.Toplevel):
     def _detect_fit_folders(self) -> list[Path]:
         """Search common locations for TPVirtual FIT file folders."""
         base_dirs: list[Path] = []
-
         home = Path.home()
-        base_dirs.append(home / "Documents")
-        base_dirs.append(home / "OneDrive" / "Documents")
 
-        # OneDrive for Business: ~/OneDrive - <OrgName>/Documents
-        for p in home.glob("OneDrive - *"):
-            if p.is_dir():
-                base_dirs.append(p / "Documents")
+        if sys.platform == "darwin":
+            # macOS: ~/TPVirtual/<account_id>/FitFiles (TrainingPeaks help)
+            base_dirs.append(home)
+        else:
+            # Windows: Documents, OneDrive, etc.
+            base_dirs.append(home / "Documents")
+            base_dirs.append(home / "OneDrive" / "Documents")
+            for p in home.glob("OneDrive - *"):
+                if p.is_dir():
+                    base_dirs.append(p / "Documents")
 
+        # Subfolder may be FITFiles or FitFiles (docs vary)
+        fit_subdir_names = ("FITFiles", "FitFiles")
         found: list[Path] = []
         for base in base_dirs:
             if not base.is_dir():
@@ -237,9 +270,13 @@ class SetupWizard(tk.Toplevel):
             if not tpv_dir.is_dir():
                 continue
             for child in tpv_dir.iterdir():
-                fit_dir = child / "FITFiles"
-                if fit_dir.is_dir():
-                    found.append(fit_dir)
+                if not child.is_dir():
+                    continue
+                for subdir_name in fit_subdir_names:
+                    fit_dir = child / subdir_name
+                    if fit_dir.is_dir():
+                        found.append(fit_dir)
+                        break
 
         # Deduplicate (resolve symlinks / case differences)
         seen: set[str] = set()

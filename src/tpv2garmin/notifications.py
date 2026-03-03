@@ -2,10 +2,9 @@
 
 import logging
 import queue
+import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-
-from winotify import Notification
 
 from tpv2garmin.config import get_config_manager
 
@@ -14,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 # ── Toast notifications ──────────────────────────────────────────────────────
 class ToastNotifier:
-    """Windows toast notifications via winotify."""
+    """Cross-platform desktop notifications (winotify on Windows, desktop-notifier elsewhere)."""
 
     def __init__(self, app_id: str = "TPV2Garmin") -> None:
         self.app_id = app_id
@@ -27,46 +26,52 @@ class ToastNotifier:
         """Toast confirming a successful upload."""
         if not self._is_enabled():
             return
-        try:
-            toast = Notification(
-                app_id=self.app_id,
-                title="Upload Complete",
-                msg=f"Uploaded {filename} to Garmin Connect",
-                duration="short",
-            )
-            toast.show()
-        except Exception:
-            logger.debug("Failed to show success toast", exc_info=True)
+        if sys.platform == "win32":
+            self._notify_winotify("Upload Complete", f"Uploaded {filename} to Garmin Connect")
+        else:
+            self._notify_desktop("Upload Complete", f"Uploaded {filename} to Garmin Connect")
 
     def notify_error(self, filename: str, error: str) -> None:
         """Toast reporting a processing failure."""
         if not self._is_enabled():
             return
-        try:
-            toast = Notification(
-                app_id=self.app_id,
-                title="Processing Error",
-                msg=f"Failed to process {filename}: {error}",
-                duration="short",
-            )
-            toast.show()
-        except Exception:
-            logger.debug("Failed to show error toast", exc_info=True)
+        if sys.platform == "win32":
+            self._notify_winotify("Processing Error", f"Failed to process {filename}: {error}")
+        else:
+            self._notify_desktop("Processing Error", f"Failed to process {filename}: {error}")
 
     def notify_auth_required(self) -> None:
         """Toast prompting the user to re-authenticate."""
         if not self._is_enabled():
             return
+        if sys.platform == "win32":
+            self._notify_winotify("Authentication Required", "Please re-authenticate with Garmin Connect")
+        else:
+            self._notify_desktop("Authentication Required", "Please re-authenticate with Garmin Connect")
+
+    def _notify_winotify(self, title: str, msg: str) -> None:
+        """Show notification via winotify (Windows only)."""
         try:
+            from winotify import Notification
             toast = Notification(
                 app_id=self.app_id,
-                title="Authentication Required",
-                msg="Please re-authenticate with Garmin Connect",
+                title=title,
+                msg=msg,
                 duration="short",
             )
             toast.show()
         except Exception:
-            logger.debug("Failed to show auth toast", exc_info=True)
+            logger.debug("Failed to show toast", exc_info=True)
+
+    def _notify_desktop(self, title: str, message: str) -> None:
+        """Show notification via desktop-notifier (macOS, Linux)."""
+        try:
+            import asyncio
+            from desktop_notifier import DesktopNotifier
+            notifier = DesktopNotifier(app_name=self.app_id)
+            asyncio.run(notifier.send(title=title, message=message))
+        except Exception:
+            logger.debug("Failed to show notification", exc_info=True)
 
 
 # ── Queue-based log handler ─────────────────────────────────────────────────
